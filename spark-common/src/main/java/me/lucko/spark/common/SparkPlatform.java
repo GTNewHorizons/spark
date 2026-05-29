@@ -396,9 +396,11 @@ public class SparkPlatform {
                     return;
                 }
                 
-                for (int i = 1; i <= 3; i++) {
+                int[] delays = {30, 10, 10};
+                int elapsed = 0;
+                for (int delay : delays) {
                     try {
-                        Thread.sleep(warningIntervalSeconds * 1000);
+                        Thread.sleep(delay * 1000L);
                     } catch (InterruptedException e) {
                         // ignore
                     }
@@ -407,11 +409,11 @@ public class SparkPlatform {
                         return;
                     }
 
+                    elapsed += delay;
                     Thread executor = executorThread.get();
                     if (executor == null) {
                         getPlugin().log(Level.WARNING, "A command execution has not completed after " +
-                                (i * warningIntervalSeconds) + " seconds but there is no executor present. Perhaps the executor shutdown?");
-                        getPlugin().log(Level.WARNING, "If the command subsequently completes without any errors, this warning should be ignored. :)");
+                                elapsed + " seconds but there is no executor present. Perhaps the executor shutdown?");
 
                     } else {
                         String stackTrace = Arrays.stream(executor.getStackTrace())
@@ -419,8 +421,7 @@ public class SparkPlatform {
                                 .collect(Collectors.joining("\n"));
 
                         getPlugin().log(Level.WARNING, "A command execution has not completed after " +
-                                (i * warningIntervalSeconds) + " seconds, it *might* be stuck. Trace: \n" + stackTrace);
-                        getPlugin().log(Level.WARNING, "If the command subsequently completes without any errors, this warning should be ignored. :)");
+                                elapsed + " seconds, it might be stuck. Trace: \n" + stackTrace);
                     }
                 }
             } finally {
