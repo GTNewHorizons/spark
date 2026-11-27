@@ -1,0 +1,38 @@
+// Manual relocations: the shipped async-profiler natives and upstream spark expect these exact packages.
+tasks.named("shadowJar").configure {
+    relocate "okio", "me.lucko.spark.lib.okio"
+    relocate "okhttp3", "me.lucko.spark.lib.okhttp3"
+    relocate "net.kyori.adventure", "me.lucko.spark.lib.adventure"
+    relocate "net.kyori.examination", "me.lucko.spark.lib.adventure.examination"
+    relocate "net.bytebuddy", "me.lucko.spark.lib.bytebuddy"
+    relocate "org.tukaani.xz", "me.lucko.spark.lib.xz"
+    relocate "com.google.protobuf", "me.lucko.spark.lib.protobuf"
+    relocate "org.objectweb.asm", "me.lucko.spark.lib.asm"
+    relocate "one.profiler", "me.lucko.spark.lib.asyncprofiler"
+    relocate "me.lucko.bytesocks.client", "me.lucko.spark.lib.bytesocks"
+    relocate "com.neovisionaries.ws", "me.lucko.spark.lib.websockets"
+
+    exclude "module-info.class"
+    exclude "META-INF/maven/**"
+    exclude "META-INF/proguard/**"
+    exclude "META-INF/LICENSE"
+    exclude "META-INF/NOTICE"
+    exclude "**/*.proto"
+    exclude "**/*.proto.bin"
+    // async-profiler's own natives; spark ships its build under spark-native/
+    exclude "linux-arm64/**"
+    exclude "linux-x64/**"
+    exclude "macos/**"
+}
+
+tasks.named("test", Test).configure {
+    useJUnitPlatform()
+    systemProperty("net.kyori.ansi.colorLevel", "indexed16")
+}
+
+// Forge's asm-debug-all 5 would shadow the asm 9 spark compiles against (and shades).
+["compileClasspath", "testCompileClasspath", "testRuntimeClasspath"].each { name ->
+    configurations.named(name).configure {
+        exclude group: "org.ow2.asm", module: "asm-debug-all"
+    }
+}
