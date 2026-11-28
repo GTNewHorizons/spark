@@ -21,7 +21,7 @@
 package me.lucko.spark.common.monitor.os;
 
 import me.lucko.spark.common.monitor.LinuxProc;
-import me.lucko.spark.common.monitor.WindowsWmic;
+import me.lucko.spark.common.monitor.WindowsWmi;
 
 /**
  * Small utility to query the operating system name & version.
@@ -59,16 +59,14 @@ public final class OperatingSystemInfo {
             }
         }
 
-        for (String line : WindowsWmic.OS_GET_CAPTION_AND_VERSION.read()) {
-            if (line.startsWith("Caption") && line.length() > 18) {
-                // Caption=Microsoft Windows something
-                // \----------------/ = 18 chars
-                name = line.substring(18).trim();
-            } else if (line.startsWith("Version")) {
-                // Version=10.0.something
-                // \------/ = 8 chars
-                version = line.substring(8).trim();
-            }
+        for (String line : WindowsWmi.OPERATING_SYSTEM_CAPTION.read()) {
+            name = line.startsWith("Microsoft ") ? line.substring(10).trim() : line;
+            break;
+        }
+
+        for (String line : WindowsWmi.OPERATING_SYSTEM_VERSION.read()) {
+            version = line;
+            break;
         }
 
         if (name == null) {
