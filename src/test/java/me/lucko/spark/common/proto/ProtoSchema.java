@@ -96,15 +96,17 @@ final class ProtoSchema {
         long unknownBytes;
         /** Fields this schema knows but that were encoded with a wire type it can't decode. */
         final Set<String> problems = new LinkedHashSet<>();
+        /** Paths of the known fields that were present, e.g. "metadata.platformStatistics". */
+        final Set<String> present = new LinkedHashSet<>();
     }
 
     ReadResult read(String messageType, byte[] data) throws IOException {
         ReadResult result = new ReadResult();
-        read(messageType, ByteString.copyFrom(data), messageType, result);
+        read(messageType, ByteString.copyFrom(data), "", result);
         return result;
     }
 
-    private void read(String messageType, ByteString data, String path, ReadResult result) throws IOException {
+    private void read(String messageType, ByteString data, String parent, ReadResult result) throws IOException {
         DescriptorProto message = this.messages.get(messageType);
         CodedInputStream in = data.newCodedInput();
         while (true) {
@@ -117,11 +119,17 @@ final class ProtoSchema {
             if (field == null) {
                 in.skipField(tag);
                 result.unknownBytes += in.getTotalBytesRead() - start;
-            } else if (!acceptsWireType(field, WireFormat.getTagWireType(tag))) {
-                result.problems.add(path + "." + field.getName() + ": wire type " + WireFormat.getTagWireType(tag) + " can't be read as " + field.getType());
+                continue;
+            }
+            String path = parent.isEmpty() ? field.getName() : parent + "." + field.getName();
+            if (!acceptsWireType(field, WireFormat.getTagWireType(tag))) {
+                result.problems.add(path + ": wire type " + WireFormat.getTagWireType(tag) + " can't be read as " + field.getType());
                 in.skipField(tag);
-            } else if (field.getType() == FieldDescriptorProto.Type.TYPE_MESSAGE) {
-                read(field.getTypeName(), in.readBytes(), path + "." + field.getName(), result);
+                continue;
+            }
+            result.present.add(path);
+            if (field.getType() == FieldDescriptorProto.Type.TYPE_MESSAGE) {
+                read(field.getTypeName(), in.readBytes(), path, result);
             } else {
                 in.skipField(tag);
             }

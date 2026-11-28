@@ -46,109 +46,69 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import java.util.zip.GZIPOutputStream;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Guards uploads to spark.lucko.me (lucko/spark-viewer), which decodes them with upstream's schema
- * (src/upstreamProto). Adding data is fine as long as upstream readers can skip it and it stays small.
+ * Guards uploads to spark.lucko.me, which decodes them with spark-viewer's schema (src/viewerProto).
+ * Adding data is fine as long as the viewer can skip it and it stays small.
  */
 public class ViewerFormatCompatibilityTest {
 
-    /** Fields/values we add to upstream types must use at least this number, so later upstream additions can't clash. */
+    /** Fields/values we add to viewer types must use at least this number, so later upstream additions can't clash. */
     private static final int EXTENSION_MIN_NUMBER = 1000;
     /** bytebin's default max content length (spark-usercontent.lucko.me may differ); uploads are gzipped. */
     private static final long UPLOAD_LIMIT_BYTES = 10L * 1024 * 1024;
-    /** Max share of an upload that upstream readers skip as unknown fields. */
+    /** Max share of an upload that the viewer skips as unknown fields. */
     private static final double MAX_EXTENSION_SHARE = 0.10;
 
-    private static ProtoSchema upstream;
+    /** Messages spark sends to the viewer: bytebin uploads and live (websocket) packets. */
+    private static final List<String> ROOTS = Arrays.asList("SamplerData", "HeapData", "HealthData", "RawPacket", "PacketWrapper");
+
+    /** Viewer fields we don't send yet ("Message.field", viewer names). Fields we reserve (dropped legacy ones) need no entry. */
+    private static final Set<String> NOT_YET_PORTED = new HashSet<>(Arrays.asList(
+            "SamplerMetadata.metrics",
+            "HeapMetadata.metrics",
+            "HealthMetadata.metrics",
+            "HealthData.channelInfo",
+            "ServerUpdateStatistics.metrics",
+            "PlatformStatistics.Memory.allocBpsLast1m",
+            "PlatformStatistics.Memory.allocBpsLast5m",
+            "PlatformStatistics.Memory.allocBpsLast15m",
+            "PlatformStatistics.Tps.gameTargetTps",
+            "PlatformStatistics.Mspt.gameMaxIdealMspt",
+            "PluginOrModMetadata.builtIn",
+            "WorldStatistics.DataPack.builtIn"
+    ));
+
+    private static ProtoSchema viewer;
     private static ProtoSchema ours;
 
     @BeforeAll
     public static void loadSchemas() throws IOException {
-        upstream = ProtoSchema.load("spark.test.descriptors.upstream");
+        viewer = ProtoSchema.load("spark.test.descriptors.viewer");
         ours = ProtoSchema.load("spark.test.descriptors.main");
     }
 
     @Test
-    public void schemaIsCompatibleWithUpstream() {
-        List<String> problems = new ArrayList<>();
-
-        for (Map.Entry<String, DescriptorProto> entry : upstream.messages.entrySet()) {
-            String name = entry.getKey();
-            DescriptorProto up = entry.getValue();
-            DescriptorProto our = ours.messages.get(name);
-            if (our == null) {
-                problems.add(name + " was removed");
-                continue;
-            }
-            for (FieldDescriptorProto upField : up.getFieldList()) {
-                FieldDescriptorProto ourField = ProtoSchema.field(our, upField.getNumber());
-                String field = name + "." + upField.getName() + " (" + upField.getNumber() + ")";
-                if (ourField == null) {
-                    problems.add(field + " was removed");
-                } else if (!ourField.getName().equals(upField.getName())) {
-                    problems.add(field + " was renamed to " + ourField.getName());
-                } else if (ourField.getType() != upField.getType() || !ourField.getTypeName().equals(upField.getTypeName())) {
-                    problems.add(field + " changed type to " + (ourField.getTypeName().isEmpty() ? ourField.getType() : ourField.getTypeName()));
-                } else if (isRepeated(ourField) != isRepeated(upField)) {
-                    problems.add(field + " changed between repeated and singular");
-                }
-            }
-            for (FieldDescriptorProto ourField : our.getFieldList()) {
-                int number = ourField.getNumber();
-                if (ProtoSchema.field(up, number) != null) {
-                    continue;
-                }
-                String field = name + "." + ourField.getName() + " (" + number + ")";
-                if (ProtoSchema.isReserved(up, number)) {
-                    problems.add(field + " reuses a number upstream reserved");
-                } else if (number < EXTENSION_MIN_NUMBER) {
-                    problems.add(field + " is new: give it number " + EXTENSION_MIN_NUMBER + " or higher");
-                }
-            }
+    public void schemaIsCompatibleWithViewer() {
+        SchemaComparison comparison = new SchemaComparison();
+        for (String root : ROOTS) {
+            comparison.message(".spark." + root, ".spark." + root);
         }
-
-        for (Map.Entry<String, EnumDescriptorProto> entry : upstream.enums.entrySet()) {
-            String name = entry.getKey();
-            EnumDescriptorProto up = entry.getValue();
-            EnumDescriptorProto our = ours.enums.get(name);
-            if (our == null) {
-                problems.add(name + " was removed");
-                continue;
-            }
-            for (EnumValueDescriptorProto upValue : up.getValueList()) {
-                EnumValueDescriptorProto ourValue = enumValue(our, upValue.getNumber());
-                if (ourValue == null || !ourValue.getName().equals(upValue.getName())) {
-                    problems.add(name + "." + upValue.getName() + " (" + upValue.getNumber() + ") was removed or renamed");
-                }
-            }
-            for (EnumValueDescriptorProto ourValue : our.getValueList()) {
-                int number = ourValue.getNumber();
-                if (enumValue(up, number) != null) {
-                    continue;
-                }
-                String value = name + "." + ourValue.getName() + " (" + number + ")";
-                if (ProtoSchema.isReserved(up, number)) {
-                    problems.add(value + " reuses a number upstream reserved");
-                } else if (number < EXTENSION_MIN_NUMBER) {
-                    problems.add(value + " is new: give it number " + EXTENSION_MIN_NUMBER + " or higher");
-                }
-            }
-        }
-
-        assertTrue(problems.isEmpty(), "Not compatible with spark.lucko.me:\n" + String.join("\n", problems));
+        assertTrue(comparison.problems.isEmpty(), "Not compatible with spark.lucko.me:\n" + String.join("\n", comparison.problems));
     }
 
     @Test
-    public void samplerUploadIsReadableUpstream(@TempDir Path directory) throws IOException {
+    public void samplerUploadIsReadableByViewer(@TempDir Path directory) throws IOException {
         try (TestSparkPlugin plugin = new TestSparkPlugin(directory)) {
             Sampler sampler = sampleTestThread(plugin);
             Sampler.ExportProps exportProps = new Sampler.ExportProps()
@@ -158,23 +118,23 @@ public class ViewerFormatCompatibilityTest {
                     .classSourceLookup(() -> ClassSourceLookup.create(plugin.platform()));
             SparkSamplerProtos.SamplerData data = sampler.toProto(plugin.platform(), exportProps);
 
-            assertFalse(data.getThreadsList().isEmpty());
-            assertReadableUpstream(".spark.SamplerData", data);
+            assertReadableByViewer(".spark.SamplerData", data,
+                    "threads.children", "metadata.platform", "metadata.platformStatistics", "metadata.systemStatistics", "timeWindowStatistics");
         }
     }
 
     @Test
-    public void heapUploadIsReadableUpstream(@TempDir Path directory) throws IOException {
+    public void heapUploadIsReadableByViewer(@TempDir Path directory) throws IOException {
         try (TestSparkPlugin plugin = new TestSparkPlugin(directory)) {
             SparkHeapProtos.HeapData data = HeapDumpSummary.createNew().toProto(plugin.platform(), TestCommandSender.INSTANCE.toData());
 
-            assertFalse(data.getEntriesList().isEmpty());
-            assertReadableUpstream(".spark.HeapData", data);
+            assertReadableByViewer(".spark.HeapData", data,
+                    "entries", "metadata.platform", "metadata.platformStatistics", "metadata.systemStatistics");
         }
     }
 
     @Test
-    public void healthUploadIsReadableUpstream(@TempDir Path directory) throws IOException {
+    public void healthUploadIsReadableByViewer(@TempDir Path directory) throws IOException {
         try (TestSparkPlugin plugin = new TestSparkPlugin(directory)) {
             // same as HealthModule#uploadHealthReport
             SparkProtos.HealthMetadata.Builder metadata = SparkProtos.HealthMetadata.newBuilder();
@@ -184,7 +144,8 @@ public class ViewerFormatCompatibilityTest {
                     .putAllTimeWindowStatistics(sampleTestThread(plugin).exportWindowStatistics())
                     .build();
 
-            assertReadableUpstream(".spark.HealthData", data);
+            assertReadableByViewer(".spark.HealthData", data,
+                    "metadata.platform", "metadata.platformStatistics", "metadata.systemStatistics", "timeWindowStatistics");
         }
     }
 
@@ -206,10 +167,13 @@ public class ViewerFormatCompatibilityTest {
         }
     }
 
-    private static void assertReadableUpstream(String messageType, MessageLite message) throws IOException {
+    private static void assertReadableByViewer(String messageType, MessageLite message, String... expectedFields) throws IOException {
         byte[] bytes = message.toByteArray();
-        ProtoSchema.ReadResult result = upstream.read(messageType, bytes);
+        ProtoSchema.ReadResult result = viewer.read(messageType, bytes);
         assertTrue(result.problems.isEmpty(), "spark.lucko.me can't read " + messageType + ":\n" + String.join("\n", result.problems));
+
+        List<String> missing = Arrays.stream(expectedFields).filter(f -> !result.present.contains(f)).collect(Collectors.toList());
+        assertTrue(missing.isEmpty(), messageType + ": spark.lucko.me gets no " + missing);
 
         assertTrue(result.unknownBytes <= bytes.length * MAX_EXTENSION_SHARE,
                 messageType + ": " + result.unknownBytes + " of " + bytes.length + " bytes are unknown to spark.lucko.me");
@@ -224,6 +188,101 @@ public class ViewerFormatCompatibilityTest {
             gzip.write(bytes);
         }
         return out.size();
+    }
+
+    /**
+     * Walks both schemas from the roots, pairing fields by number and checking only what matters on the wire:
+     * the viewer renames fields (camelCase, "creator" is "user") and nests some types differently.
+     */
+    private static final class SchemaComparison {
+        final Set<String> problems = new LinkedHashSet<>();
+        private final Set<String> visited = new HashSet<>();
+
+        void message(String viewerType, String ourType) {
+            if (!this.visited.add(viewerType + "|" + ourType)) {
+                return;
+            }
+            DescriptorProto theirs = viewer.messages.get(viewerType);
+            DescriptorProto mine = ours.messages.get(ourType);
+            String name = viewerType.substring(".spark.".length());
+            if (mine == null) {
+                this.problems.add(name + " is missing");
+                return;
+            }
+
+            for (FieldDescriptorProto theirField : theirs.getFieldList()) {
+                FieldDescriptorProto myField = ProtoSchema.field(mine, theirField.getNumber());
+                String field = name + "." + theirField.getName() + " (" + theirField.getNumber() + ")";
+                if (myField == null) {
+                    if (!ProtoSchema.isReserved(mine, theirField.getNumber()) && !NOT_YET_PORTED.contains(name + "." + theirField.getName())) {
+                        this.problems.add(field + " is missing (list it in NOT_YET_PORTED if spark doesn't send it yet)");
+                    }
+                } else if (myField.getType() != theirField.getType()) {
+                    this.problems.add(field + " is " + myField.getType() + " here, " + theirField.getType() + " in the viewer");
+                } else if (isRepeated(myField) != isRepeated(theirField)) {
+                    this.problems.add(field + " is repeated in only one schema");
+                } else if (myField.getType() == FieldDescriptorProto.Type.TYPE_MESSAGE) {
+                    message(theirField.getTypeName(), myField.getTypeName());
+                } else if (myField.getType() == FieldDescriptorProto.Type.TYPE_ENUM) {
+                    enumType(theirField.getTypeName(), myField.getTypeName());
+                }
+            }
+
+            for (FieldDescriptorProto myField : mine.getFieldList()) {
+                int number = myField.getNumber();
+                if (ProtoSchema.field(theirs, number) != null) {
+                    continue;
+                }
+                String field = name + "." + myField.getName() + " (" + number + ")";
+                if (ProtoSchema.isReserved(theirs, number)) {
+                    this.problems.add(field + " reuses a number the viewer reserved");
+                } else if (number < EXTENSION_MIN_NUMBER) {
+                    this.problems.add(field + " is new: give it number " + EXTENSION_MIN_NUMBER + " or higher");
+                }
+            }
+
+            // a oneof keeps only the last field set, so the grouping must match or data gets dropped
+            List<FieldDescriptorProto> shared = mine.getFieldList().stream()
+                    .filter(f -> ProtoSchema.field(theirs, f.getNumber()) != null)
+                    .collect(Collectors.toList());
+            for (int i = 0; i < shared.size(); i++) {
+                for (int j = i + 1; j < shared.size(); j++) {
+                    FieldDescriptorProto a = shared.get(i);
+                    FieldDescriptorProto b = shared.get(j);
+                    boolean mineTogether = sameOneof(a, b);
+                    boolean theirsTogether = sameOneof(ProtoSchema.field(theirs, a.getNumber()), ProtoSchema.field(theirs, b.getNumber()));
+                    if (mineTogether != theirsTogether) {
+                        this.problems.add(name + "." + a.getName() + " and " + b.getName() + " share a oneof in only one schema");
+                    }
+                }
+            }
+        }
+
+        void enumType(String viewerType, String ourType) {
+            if (!this.visited.add(viewerType + "|" + ourType)) {
+                return;
+            }
+            EnumDescriptorProto theirs = viewer.enums.get(viewerType);
+            EnumDescriptorProto mine = ours.enums.get(ourType);
+            String name = viewerType.substring(".spark.".length());
+            for (EnumValueDescriptorProto myValue : mine.getValueList()) {
+                EnumValueDescriptorProto theirValue = enumValue(theirs, myValue.getNumber());
+                String value = name + "." + myValue.getName() + " (" + myValue.getNumber() + ")";
+                if (theirValue != null) {
+                    if (!theirValue.getName().equals(myValue.getName())) {
+                        this.problems.add(value + " is " + theirValue.getName() + " in the viewer");
+                    }
+                } else if (ProtoSchema.isReserved(theirs, myValue.getNumber())) {
+                    this.problems.add(value + " reuses a number the viewer reserved");
+                } else if (myValue.getNumber() < EXTENSION_MIN_NUMBER) {
+                    this.problems.add(value + " is new: give it number " + EXTENSION_MIN_NUMBER + " or higher");
+                }
+            }
+        }
+
+        private static boolean sameOneof(FieldDescriptorProto a, FieldDescriptorProto b) {
+            return a.hasOneofIndex() && b.hasOneofIndex() && a.getOneofIndex() == b.getOneofIndex();
+        }
     }
 
     private static boolean isRepeated(FieldDescriptorProto field) {

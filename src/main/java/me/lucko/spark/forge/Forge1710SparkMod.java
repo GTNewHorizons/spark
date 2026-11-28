@@ -45,7 +45,9 @@ public class Forge1710SparkMod {
     private Forge1710ServerSparkPlugin activeServerPlugin;
 
     public String getVersion() {
-        return Forge1710SparkMod.class.getAnnotation(Mod.class).version();
+        String version = Forge1710SparkMod.class.getAnnotation(Mod.class).version();
+        // git tags are "v1.2.3"; callers add their own "v"
+        return version.startsWith("v") ? version.substring(1) : version;
     }
 
     @EventHandler
